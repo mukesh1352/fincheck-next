@@ -3,7 +3,7 @@ export const dynamic = "force-dynamic"
 
 import bcrypt from "bcrypt"
 import { NextResponse } from "next/server"
-import clientPromise from "@/lib/mongodb"
+import connectDB from "@/lib/mongodb"
 
 export async function POST(req: Request) {
   try {
@@ -16,10 +16,12 @@ export async function POST(req: Request) {
       )
     }
 
-    const client = await clientPromise
-    const db = client.db()
+    const db = await connectDB()
 
-    const existing = await db.collection("users").findOne({ username })
+    const existing = await db
+      .collection("users")
+      .findOne({ username })
+
     if (existing) {
       return NextResponse.json(
         { error: "Username already taken" },
@@ -31,7 +33,7 @@ export async function POST(req: Request) {
 
     await db.collection("users").insertOne({
       username,
-      passwordHash,
+      passwordHash, // 🔑 SINGLE SOURCE OF TRUTH
       createdAt: new Date(),
     })
 

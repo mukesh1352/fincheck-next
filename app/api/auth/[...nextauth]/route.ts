@@ -2,32 +2,37 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 import NextAuth, { type NextAuthOptions } from "next-auth"
-import Credentials from "next-auth/providers/credentials"
+import CredentialsProvider from "next-auth/providers/credentials"
 import bcrypt from "bcrypt"
-import clientPromise from "@/lib/mongodb"
+import connectDB from "@/lib/mongodb"
 
 export const authOptions: NextAuthOptions = {
+  session: {
+    strategy: "jwt",
+  },
   providers: [
-    Credentials({
+    CredentialsProvider({
+      name: "Credentials",
       credentials: {
         username: { label: "Username", type: "text" },
         password: { label: "Password", type: "password" },
       },
       async authorize(credentials) {
-        if (!credentials?.username || !credentials.password) return null
+        if (!credentials?.username || !credentials.password) {
+          return null
+        }
 
-        const client = await clientPromise
-        const db = client.db()
+        const db = await connectDB()
 
-        const user = await db.collection("users").findOne({
-          username: credentials.username,
-        })
+        const user = await db
+          .collection("users")
+          .findOne({ username: credentials.username })
 
         if (!user) return null
 
         const valid = await bcrypt.compare(
           credentials.password,
-          user.passwordHash
+          user.passwordHash // ✅ MATCHES SIGNUP
         )
 
         if (!valid) return null
@@ -39,8 +44,9 @@ export const authOptions: NextAuthOptions = {
       },
     }),
   ],
-  session: { strategy: "jwt" },
-  pages: { signIn: "/sign-in" },
+  pages: {
+    signIn: "/sign-in",
+  },
 }
 
 const handler = NextAuth(authOptions)
