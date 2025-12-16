@@ -44,8 +44,9 @@ export default async function Header() {
         <div className="mx-auto max-w-6xl px-6">
           <ul className="flex gap-6 text-sm text-gray-600">
             {[
+              { href: "/upload", label: "Upload" },          // ✅ added
+              { href: "/results", label: "Results" },        // ✅ already exists
               { href: "/image-loader", label: "Image Loader" },
-              { href: "/results", label: "Results" },
               { href: "/predictions", label: "Predictions" },
             ].map((item) => (
               <li key={item.href}>

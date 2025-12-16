@@ -1,21 +1,22 @@
-import { MongoClient } from "mongodb"
+import { MongoClient, Db } from "mongodb"
 
 const uri = process.env.MONGODB_URI!
-const options = {}
 
-let client: MongoClient
-let clientPromise: Promise<MongoClient>
-
-declare global {
-  // eslint-disable-next-line no-var
-  var _mongoClientPromise: Promise<MongoClient> | undefined
+if (!uri) {
+  throw new Error("Please define MONGODB_URI in .env")
 }
 
-if (!global._mongoClientPromise) {
-  client = new MongoClient(uri, options)
-  global._mongoClientPromise = client.connect()
+let cachedClient: MongoClient | null = null
+let cachedDb: Db | null = null
+
+export default async function connectDB(): Promise<Db> {
+  if (cachedDb) return cachedDb
+
+  const client = cachedClient ?? new MongoClient(uri)
+  if (!cachedClient) {
+    cachedClient = await client.connect()
+  }
+
+  cachedDb = cachedClient.db()
+  return cachedDb
 }
-
-clientPromise = global._mongoClientPromise
-
-export default clientPromise
