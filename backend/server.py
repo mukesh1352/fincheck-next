@@ -7,10 +7,11 @@ from pathlib import Path
 from PIL import Image
 import torchvision.transforms as transforms
 
-from model_def import MNISTCNN
-import download_models
+from backend.model_def import MNISTCNN
+from backend import download_models
 
 download_models.download()
+
 
 app = FastAPI()
 

@@ -1,3 +1,4 @@
+# backend/download_models.py
 import requests
 from pathlib import Path
 
@@ -5,9 +6,12 @@ BASE_DIR = Path(__file__).resolve().parent
 MODEL_DIR = BASE_DIR / "model"
 MODEL_DIR.mkdir(exist_ok=True)
 
-BASE_URL = "https://github.com/mukesh1352/fincheck-next/releases/download/models"
+# 🔴 MUST MATCH YOUR ACTUAL RELEASE TAG
+RELEASE_TAG = "v1-models"
 
-FILES = [
+BASE_URL = f"https://github.com/mukesh1352/fincheck-next/releases/download/{RELEASE_TAG}"
+
+MODELS = [
     "baseline_mnist.pth",
     "kd_mnist.pth",
     "lrf_mnist.pth",
@@ -17,20 +21,21 @@ FILES = [
 ]
 
 def download():
-    for f in FILES:
-        dest = MODEL_DIR / f
+    for name in MODELS:
+        dest = MODEL_DIR / name
         if dest.exists():
-            print(f"✅ {f} already exists")
+            print(f"✅ {name} already exists")
             continue
 
-        url = f"{BASE_URL}/{f}"
-        print(f"⬇️ Downloading {f}")
+        url = f"{BASE_URL}/{name}"
+        print(f"⬇️ Downloading {url}")
+
         r = requests.get(url, stream=True)
-        r.raise_for_status()
+        if r.status_code != 200:
+            raise RuntimeError(f"❌ Failed to download {name} ({r.status_code})")
 
-        with open(dest, "wb") as out:
+        with open(dest, "wb") as f:
             for chunk in r.iter_content(chunk_size=8192):
-                out.write(chunk)
+                f.write(chunk)
 
-if __name__ == "__main__":
-    download()
+    print("🎉 All models downloaded successfully")
