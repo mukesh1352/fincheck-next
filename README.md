@@ -1,19 +1,4 @@
-Understood.
-Below is a **clean, fully refactored, professional, emoji-free, copy-paste–ready `README.md`** that merges everything you provided into a **single coherent document**, suitable for:
-
-* Final-year project submission
-* GitHub public repository
-* Academic review
-* Recruiter evaluation
-
-Nothing extra, nothing informal.
-
----
-
-````md
 # FinCheck  
-## Optimized MNIST Inference and OCR Verification Platform
-
 FinCheck is a full-stack system for benchmarking optimized convolutional neural network (CNN) models on the MNIST dataset and for verifying handwritten numeric input using OCR. The system is designed for research, performance analysis, and real-world numeric verification workflows.
 
 The platform is:
@@ -87,7 +72,7 @@ Backend (FastAPI + PyTorch)
 
 Database (MongoDB Atlas)
  └─ Stores inference results
-````
+```
 
 ---
 
