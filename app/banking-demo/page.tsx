@@ -1,113 +1,122 @@
 "use client"
 
-import { useState } from "react"
-
-type Result = {
-  confidence: number
-  latency_ms: number
-  ram_mb: number
-}
+import { useRef, useState } from "react"
 
 export default function BankingDemoPage() {
-  const [image, setImage] = useState<File | null>(null)
-  const [results, setResults] = useState<Record<string, Result> | null>(null)
+  const [typedText, setTypedText] = useState("")
+  const [verifyResult, setVerifyResult] = useState<any>(null)
   const [loading, setLoading] = useState(false)
-  const [mode, setMode] = useState("cheque")
 
-  async function runInference() {
-    if (!image) return
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+
+  async function verifyTypedText() {
+    if (!typedText.trim()) return
+
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return
 
     setLoading(true)
-    const formData = new FormData()
-    formData.append("image", image)
+    setVerifyResult(null)
 
-    const res = await fetch("http://localhost:8000/run", {
-      method: "POST",
-      body: formData,
-    })
+    canvas.width = 400
+    canvas.height = 120
 
-    const data = await res.json()
-    setResults(data)
-    setLoading(false)
+    ctx.fillStyle = "white"
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+    ctx.fillStyle = "black"
+    ctx.font = "64px Arial"
+    ctx.textAlign = "center"
+    ctx.textBaseline = "middle"
+    ctx.fillText(typedText, canvas.width / 2, canvas.height / 2)
+
+    canvas.toBlob(async (blob) => {
+      if (!blob) return
+
+      const formData = new FormData()
+      formData.append("image", blob, "typed.png")
+      formData.append("raw_text", typedText)
+
+      const res = await fetch("/api/verify", {
+        method: "POST",
+        body: formData,
+      })
+
+      const data = await res.json()
+      setVerifyResult(data)
+      setLoading(false)
+    }, "image/png")
+  }
+
+  function verdictColor(verdict: string) {
+    if (verdict === "VALID_TYPED_TEXT") return "text-green-600"
+    return "text-red-600"
   }
 
   return (
     <main className="mx-auto max-w-6xl px-6 py-12 space-y-8">
       <h1 className="text-3xl font-semibold">
-        Banking ML Compression Demo
+        Banking OCR – Character Error Detection
       </h1>
 
-      {/* Mode Selector */}
-      <div className="flex gap-3">
-        {[
-          { id: "cheque", label: "Cheque Verification" },
-          { id: "atm", label: "ATM Edge Inference" },
-          { id: "mobile", label: "Mobile OCR Filter" },
-        ].map((m) => (
-          <button
-            key={m.id}
-            onClick={() => setMode(m.id)}
-            className={`px-4 py-2 rounded-md border text-sm ${
-              mode === m.id
-                ? "bg-black text-white"
-                : "bg-white text-gray-700"
-            }`}
-          >
-            {m.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Mode Description */}
-      <p className="text-gray-600 max-w-3xl">
-        {mode === "cheque" &&
-          "Simulates handwritten digit verification on bank cheques under noisy scanning conditions."}
-        {mode === "atm" &&
-          "Benchmarks compressed CNN models for low-latency inference on ATM-grade hardware."}
-        {mode === "mobile" &&
-          "Evaluates lightweight OCR filtering for mobile banking apps to reduce server load."}
-      </p>
-
-      {/* Upload */}
-      <div className="space-y-4">
+      <section className="space-y-3">
         <input
-          type="file"
-          accept="image/*"
-          onChange={(e) => setImage(e.target.files?.[0] || null)}
+          type="text"
+          placeholder="Type e.g. 703, 7o3, 1l9"
+          value={typedText}
+          onChange={(e) => setTypedText(e.target.value)}
+          className="border rounded-md px-3 py-2 w-64"
         />
 
         <button
-          onClick={runInference}
-          disabled={!image || loading}
-          className="rounded-md bg-blue-600 px-4 py-2 text-white text-sm disabled:opacity-50"
+          onClick={verifyTypedText}
+          disabled={loading}
+          className="ml-3 rounded-md bg-gray-900 px-4 py-2 text-white"
         >
-          {loading ? "Running Models..." : "Run Inference"}
+          {loading ? "Verifying..." : "Verify Typed Text"}
         </button>
-      </div>
 
-      {/* Results */}
-      {results && (
-        <div className="overflow-x-auto">
-          <table className="w-full border border-gray-200 text-sm">
-            <thead className="bg-gray-100">
-              <tr>
-                <th className="p-3 text-left">Model</th>
-                <th className="p-3 text-left">Confidence (%)</th>
-                <th className="p-3 text-left">Latency (ms)</th>
-                <th className="p-3 text-left">RAM Δ (MB)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {Object.entries(results).map(([name, r]) => (
-                <tr key={name} className="border-t">
-                  <td className="p-3 font-medium">{name}</td>
-                  <td className="p-3">{r.confidence.toFixed(2)}</td>
-                  <td className="p-3">{r.latency_ms}</td>
-                  <td className="p-3">{r.ram_mb}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <canvas ref={canvasRef} className="hidden" />
+      </section>
+
+      {verifyResult && (
+        <div className="border rounded-md p-5 bg-gray-50 space-y-3">
+          <p>
+            <strong>Verdict:</strong>{" "}
+            <span className={verdictColor(verifyResult.verdict)}>
+              {verifyResult.verdict}
+            </span>
+          </p>
+
+          <p>
+            <strong>Final Output:</strong>{" "}
+            {verifyResult.final_output}
+          </p>
+
+          {verifyResult.errors?.length > 0 && (
+            <div className="mt-4 border border-red-300 bg-red-50 p-4">
+              <h3 className="font-semibold text-red-700">
+                Character Errors Detected
+              </h3>
+              <ul className="list-disc pl-5 text-sm text-red-700">
+                {verifyResult.errors.map((e: any, i: number) => (
+                  <li key={i}>
+                    Position {e.position}: typed <b>{e.typed_char}</b>,
+                    interpreted as <b>{e.ocr_char}</b>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {verifyResult.why && (
+            <p className="text-sm text-gray-700">
+              <b>Explanation:</b> {verifyResult.why}
+            </p>
+          )}
         </div>
       )}
     </main>

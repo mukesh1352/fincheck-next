@@ -48,3 +48,12 @@ just format # running the formatter
 
 
 “We implement a lightweight segmentation-based OCR pipeline as a pre-processing step, while keeping the CNN architecture unchanged.”
+
+
+# import download_models
+
+# download_models.download()
+
+
+pip install pytesseract
+brew install tesseract 
