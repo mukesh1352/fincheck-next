@@ -134,53 +134,65 @@ async def verify(
     image: UploadFile = File(...),
     raw_text: str = Form(...)
 ):
-    pil_img = Image.open(image.file).convert("L")
+    try:
+        pil_img = Image.open(image.file).convert("L")
 
-    # OCR (digits only)
-    ocr_text = pytesseract.image_to_string(
-        pil_img,
-        config="--psm 7 -c tessedit_char_whitelist=0123456789"
-    ).strip().replace(" ", "")
+        # OCR (digits only)
+        ocr_text = pytesseract.image_to_string(
+            pil_img,
+            config="--psm 7 -c tessedit_char_whitelist=0123456789"
+        ).strip().replace(" ", "")
 
-    if not ocr_text:
+        if not ocr_text:
+            return {
+                "verdict": "INVALID_OR_AMBIGUOUS",
+                "method": "OCR",
+                "final_output": None,
+                "errors": [],
+                "why": "OCR could not detect numeric characters."
+            }
+
+        errors = []
+        min_len = min(len(raw_text), len(ocr_text))
+
+        for i in range(min_len):
+            if raw_text[i] != ocr_text[i]:
+                errors.append({
+                    "position": i + 1,
+                    "typed_char": raw_text[i],
+                    "ocr_char": ocr_text[i],
+                    "reason": "Ambiguous character normalized by OCR"
+                })
+
+        if len(raw_text) != len(ocr_text):
+            errors.append({
+                "reason": "Length mismatch between typed input and OCR output"
+            })
+
+        if errors:
+            return {
+                "verdict": "INVALID_OR_AMBIGUOUS",
+                "method": "OCR_ERROR_DETECTION",
+                "final_output": ocr_text,
+                "errors": errors,
+                "why": "One or more characters are ambiguous or invalid."
+            }
+
         return {
-            "verdict": "INVALID_OR_AMBIGUOUS",
+            "verdict": "VALID_TYPED_TEXT",
+            "method": "OCR",
+            "final_output": ocr_text,
+            "errors": [],
+            "why": "Typed numeric input validated successfully."
+        }
+
+    except Exception as e:
+        # 🔥 THIS IS WHAT WAS MISSING
+        print("❌ /verify failed:", str(e))
+        return {
+            "verdict": "ERROR",
             "method": "OCR",
             "final_output": None,
             "errors": [],
-            "why": "OCR could not detect numeric characters."
+            "why": "OCR service failed on server."
         }
-
-    errors = []
-    min_len = min(len(raw_text), len(ocr_text))
-
-    for i in range(min_len):
-        if raw_text[i] != ocr_text[i]:
-            errors.append({
-                "position": i + 1,
-                "typed_char": raw_text[i],
-                "ocr_char": ocr_text[i],
-                "reason": "Ambiguous character normalized by OCR"
-            })
-
-    if len(raw_text) != len(ocr_text):
-        errors.append({
-            "reason": "Length mismatch between typed input and OCR output"
-        })
-
-    if errors:
-        return {
-            "verdict": "INVALID_OR_AMBIGUOUS",
-            "method": "OCR_ERROR_DETECTION",
-            "final_output": ocr_text,
-            "errors": errors,
-            "why": "One or more characters are ambiguous or invalid."
-        }
-
-    return {
-        "verdict": "VALID_TYPED_TEXT",
-        "method": "OCR",
-        "final_output": ocr_text,
-        "errors": [],
-        "why": "Typed numeric input validated successfully."
-    }
