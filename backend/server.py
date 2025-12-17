@@ -2,7 +2,7 @@ import time
 import psutil
 import torch
 import numpy as np
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 from PIL import Image
@@ -10,8 +10,6 @@ import torchvision.transforms as transforms
 import pytesseract
 import re
 from model_def import MNISTCNN
-import cv2
-from fastapi import Form
 
 # -------------------- App setup --------------------
 app = FastAPI()
@@ -36,7 +34,24 @@ MODEL_FILES = [
     "ws_mnist.pth",
 ]
 
-MODELS = {}
+# -------------------- MNIST Lazy Loader --------------------
+MNIST_MODELS = None
+
+def load_mnist_models():
+    global MNIST_MODELS
+    if MNIST_MODELS is None:
+        print("🔵 Loading MNIST models...")
+        MNIST_MODELS = {}
+        for f in MODEL_FILES:
+            model = MNISTCNN().to(DEVICE)
+            model.load_state_dict(
+                torch.load(MODEL_DIR / f, map_location=DEVICE),
+                strict=False
+            )
+            model.eval()
+            MNIST_MODELS[f] = model
+        print("✅ MNIST models loaded")
+    return MNIST_MODELS
 
 # -------------------- Transform --------------------
 transform = transforms.Compose([
@@ -45,59 +60,28 @@ transform = transforms.Compose([
     transforms.ToTensor(),
 ])
 
-# -------------------- Character segmentation --------------------
-def split_characters(pil_img):
-    img = np.array(pil_img)
-
-    _, thresh = cv2.threshold(
-        img, 150, 255, cv2.THRESH_BINARY_INV
-    )
-
-    contours, _ = cv2.findContours(
-        thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-    )
-
-    boxes = []
-    for c in contours:
-        x, y, w, h = cv2.boundingRect(c)
-        if w * h > 300:
-            boxes.append((x, y, w, h))
-
-    boxes = sorted(boxes, key=lambda b: b[0])
-
-    chars = []
-    for x, y, w, h in boxes:
-        chars.append(img[y:y+h, x:x+w])
-
-    return chars
-
-# -------------------- Load models --------------------
-for f in MODEL_FILES:
-    model = MNISTCNN().to(DEVICE)
-    model.load_state_dict(
-        torch.load(MODEL_DIR / f, map_location=DEVICE),
-        strict=False
-    )
-    model.eval()
-    MODELS[f] = model
-
 # -------------------- Health --------------------
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "mnist_loaded": MNIST_MODELS is not None
+    }
 
 # ==================================================
-# OLD ENDPOINT (UNCHANGED)
+# MNIST INFERENCE / BENCHMARK ENDPOINT
 # ==================================================
 @app.post("/run")
 async def run(image: UploadFile = File(...)):
+    models = load_mnist_models()
+
     img = Image.open(image.file).convert("L")
     img = transform(img).unsqueeze(0).to(DEVICE)
 
     process = psutil.Process()
     results = {}
 
-    for name, model in MODELS.items():
+    for name, model in models.items():
         mem_before = process.memory_info().rss / 1024 / 1024
         start = time.perf_counter()
 
@@ -116,7 +100,7 @@ async def run(image: UploadFile = File(...)):
     return results
 
 # ==================================================
-# TEXT-ONLY VERIFICATION ENDPOINT
+# OCR + CHARACTER ERROR DETECTION
 # ==================================================
 @app.post("/verify")
 async def verify(
@@ -141,7 +125,6 @@ async def verify(
         }
 
     errors = []
-
     min_len = min(len(raw_text), len(ocr_text))
 
     for i in range(min_len):

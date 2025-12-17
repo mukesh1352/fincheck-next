@@ -3,8 +3,11 @@ FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
-# System deps for OCR
-RUN apt-get update && apt-get install -y \
+# -------------------------
+# System dependencies
+# -------------------------
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-eng \
     libglib2.0-0 \
@@ -12,16 +15,29 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
     libxrender1 \
     libgl1 \
-    && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/*
 
-# Python deps
+# -------------------------
+# Python dependencies
+# -------------------------
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy code
+# -------------------------
+# Copy backend code
+# -------------------------
 COPY . .
 
-EXPOSE 8000
+# -------------------------
+# Optional sanity check (safe)
+# -------------------------
+RUN python - <<EOF
+import pytesseract
+print("Tesseract OK:", pytesseract.get_tesseract_version())
+EOF
 
-# ⚠️ IMPORTANT: use $PORT for Render
+# -------------------------
+# Expose & run (Render uses $PORT)
+# -------------------------
+EXPOSE 8000
 CMD ["sh", "-c", "uvicorn server:app --host 0.0.0.0 --port $PORT"]
