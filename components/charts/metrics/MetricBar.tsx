@@ -24,21 +24,25 @@ export default function MetricBar({
 }) {
   const meta = METRIC_META[dataKey]
 
-  const bestModel = [...data].sort((a, b) => {
+  const sorted = [...data].sort((a, b) => {
     const va = a[dataKey] as number
     const vb = b[dataKey] as number
     return meta.higherIsBetter ? vb - va : va - vb
-  })[0]?.model
+  })
+
+  const bestModel = sorted[0]?.model
+
+  const bestReason = meta.higherIsBetter
+    ? `Highest ${meta.label}`
+    : `Lowest ${meta.label}`
 
   return (
     <GraphCard
       title={meta.label}
-      description={`${meta.description} ${
-        meta.higherIsBetter
-          ? "Higher values are better."
-          : "Lower values are better."
-      }`}
+      description={meta.description}
+      userHint={meta.userHint}
       bestLabel={bestModel}
+      bestReason={bestReason}
     >
       <ResponsiveContainer width="100%" height={280}>
         <BarChart data={data}>
