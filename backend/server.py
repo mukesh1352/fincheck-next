@@ -1,11 +1,10 @@
 import time
 import io
 import zipfile
-import psutil
 import torch
 import numpy as np
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 import pytesseract
 
 from fastapi import FastAPI, UploadFile, File, Form
@@ -17,6 +16,13 @@ from torchvision.datasets import MNIST
 from torchvision.transforms import GaussianBlur
 
 from model_def import MNISTCNN
+
+# ==================================================
+# GLOBAL TORCH OPTIMIZATION (CRITICAL)
+# ==================================================
+torch.set_grad_enabled(False)
+torch.backends.cudnn.benchmark = False
+torch.backends.cudnn.deterministic = True
 
 # ==================================================
 # APP SETUP
@@ -47,7 +53,7 @@ MODEL_FILES = [
 ]
 
 # ==================================================
-# MODEL LOADER (LAZY)
+# MODEL LOADER (LAZY, CACHED)
 # ==================================================
 
 MNIST_MODELS = None
@@ -69,32 +75,23 @@ def load_mnist_models():
     return MNIST_MODELS
 
 # ==================================================
-# TRANSFORMS (CORRECT ORDER)
+# TRANSFORMS
 # ==================================================
 
-# Clean MNIST
 CLEAN_TRANSFORM = transforms.Compose([
     transforms.Grayscale(1),
     transforms.Resize((28, 28)),
     transforms.ToTensor(),
 ])
 
-# Gaussian Noise (sensor noise)
 def NOISY_TRANSFORM(std=0.2):
     return transforms.Compose([
         transforms.Grayscale(1),
         transforms.Resize((28, 28)),
         transforms.ToTensor(),
-        transforms.Lambda(
-            lambda x: torch.clamp(
-                x + std * torch.randn_like(x),
-                0.0,
-                1.0,
-            )
-        ),
+        transforms.Lambda(lambda x: torch.clamp(x + std * torch.randn_like(x), 0.0, 1.0)),
     ])
 
-# Gaussian Blur (defocus / scanning)
 def BLUR_TRANSFORM(kernel_size=5, sigma=1.0):
     return transforms.Compose([
         transforms.Grayscale(1),
@@ -103,105 +100,64 @@ def BLUR_TRANSFORM(kernel_size=5, sigma=1.0):
         transforms.ToTensor(),
     ])
 
-# Noise + Blur (realistic degradation)
-def NOISY_BLUR_TRANSFORM(
-    noise_std=0.2,
-    blur_kernel=5,
-    blur_sigma=1.0,
-):
+def NOISY_BLUR_TRANSFORM(noise_std=0.2, blur_kernel=5, blur_sigma=1.0):
     return transforms.Compose([
         transforms.Grayscale(1),
         transforms.Resize((28, 28)),
         GaussianBlur(kernel_size=blur_kernel, sigma=blur_sigma),
         transforms.ToTensor(),
-        transforms.Lambda(
-            lambda x: torch.clamp(
-                x + noise_std * torch.randn_like(x),
-                0.0,
-                1.0,
-            )
-        ),
+        transforms.Lambda(lambda x: torch.clamp(x + noise_std * torch.randn_like(x), 0.0, 1.0)),
     ])
 
 # ==================================================
-# SINGLE IMAGE INFERENCE
+# FAST BATCHED INFERENCE (CORE SPEEDUP)
 # ==================================================
 
-def run_single_image(img_tensor, models, process):
+def run_batch(images: List[torch.Tensor], models):
+    batch = torch.stack(images).to(DEVICE)
     results = {}
 
     for name, model in models.items():
-        mem_before = process.memory_info().rss / 1024 / 1024
-
         start = time.perf_counter()
-        with torch.no_grad():
-            logits = model(img_tensor)
-            probs = torch.softmax(logits, dim=1)
-        latency_ms = (time.perf_counter() - start) * 1000
+        logits = model(batch)
+        probs = torch.softmax(logits, dim=1)
+        latency_ms = (time.perf_counter() - start) * 1000 / len(images)
 
-        mem_after = process.memory_info().rss / 1024 / 1024
-
-        confidence = probs.max().item() * 100
-        entropy = float(-(probs * torch.log(probs + 1e-8)).sum().item())
+        confidence = probs.max(dim=1).values.mean().item() * 100
+        entropy = float(-(probs * torch.log(probs + 1e-8)).sum(dim=1).mean().item())
         stability = float(logits.std().item())
-        ram_mb = mem_after - mem_before
 
         results[name] = {
             "latency_ms": round(latency_ms, 3),
             "confidence_percent": round(confidence, 2),
             "entropy": round(entropy, 4),
             "stability": round(abs(stability), 4),
-            "ram_mb": round(ram_mb, 3),
+            "ram_mb": 0.0,  # removed expensive psutil tracking
         }
 
     return results
 
 # ==================================================
-# AGGREGATE DATASET METRICS
-# ==================================================
-
-def aggregate_metrics(per_image_results):
-    aggregated = {}
-
-    for model, entries in per_image_results.items():
-        aggregated[model] = {
-            "avg_confidence": round(np.mean([e["confidence_percent"] for e in entries]), 2),
-            "avg_latency_ms": round(np.mean([e["latency_ms"] for e in entries]), 3),
-            "avg_entropy": round(np.mean([e["entropy"] for e in entries]), 4),
-            "avg_stability": round(np.mean([e["stability"] for e in entries]), 4),
-            "avg_ram_mb": round(np.mean([e["ram_mb"] for e in entries]), 3),
-            "num_images": len(entries),
-        }
-
-    return aggregated
-
-# ==================================================
-# HEALTH CHECK
+# HEALTH
 # ==================================================
 
 @app.get("/health")
 def health():
-    return {
-        "status": "ok",
-        "mnist_loaded": MNIST_MODELS is not None,
-    }
+    return {"status": "ok", "mnist_loaded": MNIST_MODELS is not None}
 
 # ==================================================
-# SINGLE IMAGE ENDPOINT
+# SINGLE IMAGE
 # ==================================================
 
 @app.post("/run")
 async def run(image: UploadFile = File(...)):
     models = load_mnist_models()
-    process = psutil.Process()
-
     img = Image.open(image.file).convert("L")
-    img_tensor = CLEAN_TRANSFORM(img).unsqueeze(0).to(DEVICE)
-
-    return run_single_image(img_tensor, models, process)
+    tensor = CLEAN_TRANSFORM(img)
+    return run_batch([tensor], models)
 
 # ==================================================
-# DATASET / ROBUSTNESS ENDPOINT
+# DATASET (FAST, BATCHED)
 # ==================================================
 
 @app.post("/run-dataset")
@@ -210,163 +166,79 @@ async def run_dataset(
     dataset_name: Optional[str] = Form(None),
 ):
     models = load_mnist_models()
-    process = psutil.Process()
-
-    per_image_results = {name: [] for name in models.keys()}
     images = []
 
-    # ---------------- LOAD DATASET ----------------
-
-    if zip_file is not None:
+    if zip_file:
         with zipfile.ZipFile(io.BytesIO(await zip_file.read())) as z:
             for name in z.namelist():
                 if name.lower().endswith((".png", ".jpg", ".jpeg")):
                     with z.open(name) as f:
-                        images.append(
-                            CLEAN_TRANSFORM(Image.open(f).convert("L"))
-                        )
+                        images.append(CLEAN_TRANSFORM(Image.open(f).convert("L")))
         dataset_type = "CUSTOM_ZIP"
 
     elif dataset_name:
-
-        base_dataset = MNIST(
-            root=DATA_DIR,
-            train=False,
-            download=True,
-            transform=None,
-        )
+        base = MNIST(root=DATA_DIR, train=False, download=True)
 
         if dataset_name == "MNIST_100":
-            images = [CLEAN_TRANSFORM(base_dataset[i][0]) for i in range(100)]
-
+            images = [CLEAN_TRANSFORM(base[i][0]) for i in range(100)]
         elif dataset_name == "MNIST_500":
-            images = [CLEAN_TRANSFORM(base_dataset[i][0]) for i in range(500)]
-
-        elif dataset_name == "MNIST_TEST":
-            images = [CLEAN_TRANSFORM(base_dataset[i][0]) for i in range(len(base_dataset))]
-
+            images = [CLEAN_TRANSFORM(base[i][0]) for i in range(500)]
         elif dataset_name == "MNIST_NOISY_100":
-            images = [NOISY_TRANSFORM()(base_dataset[i][0]) for i in range(100)]
-
+            images = [NOISY_TRANSFORM()(base[i][0]) for i in range(100)]
         elif dataset_name == "MNIST_BLUR_100":
-            images = [BLUR_TRANSFORM()(base_dataset[i][0]) for i in range(100)]
-
+            images = [BLUR_TRANSFORM()(base[i][0]) for i in range(100)]
         elif dataset_name == "MNIST_NOISY_BLUR_100":
-            images = [NOISY_BLUR_TRANSFORM()(base_dataset[i][0]) for i in range(100)]
-
+            images = [NOISY_BLUR_TRANSFORM()(base[i][0]) for i in range(100)]
         else:
             return {"error": f"Unknown dataset_name: {dataset_name}"}
 
         dataset_type = dataset_name
-
     else:
         return {"error": "Either zip_file or dataset_name must be provided"}
 
-    # ---------------- RUN INFERENCE ----------------
-
-    for img in images:
-        img_tensor = img.unsqueeze(0).to(DEVICE)
-        single_result = run_single_image(img_tensor, models, process)
-
-        for model, metrics in single_result.items():
-            per_image_results[model].append(metrics)
-
-    aggregated = aggregate_metrics(per_image_results)
+    batch_results = run_batch(images, models)
 
     return {
         "dataset_type": dataset_type,
         "num_images": len(images),
-        "models": aggregated,
+        "models": batch_results,
     }
 
+# ==================================================
+# OCR (FAST)
+# ==================================================
 
-# ==================================================
-# OCR + CHARACTER ERROR DETECTION
-# ==================================================
 @app.post("/verify")
-async def verify(
-    image: UploadFile = File(...),
-    raw_text: str = Form(...)
-):
+async def verify(image: UploadFile = File(...), raw_text: str = Form(...)):
     try:
-        pil_img = Image.open(image.file).convert("L")
+        img = Image.open(image.file).convert("L")
+        img = img.resize((128, 32))
 
-        # OCR (digits only)
         ocr_text = pytesseract.image_to_string(
-            pil_img,
-            config="--psm 7 -c tessedit_char_whitelist=0123456789"
-        ).strip().replace(" ", "")
+            img,
+            config="--psm 10 --oem 1 -c tessedit_char_whitelist=0123456789",
+        ).strip()
 
         if not ocr_text:
-            return {
-                "verdict": "INVALID_OR_AMBIGUOUS",
-                "method": "OCR",
-                "final_output": None,
-                "errors": [],
-                "why": "OCR could not detect numeric characters."
-            }
+            return {"verdict": "INVALID_OR_AMBIGUOUS", "final_output": None, "errors": []}
 
         errors = []
+        for i in range(max(len(raw_text), len(ocr_text))):
+            if (raw_text[i:i+1] or None) != (ocr_text[i:i+1] or None):
+                errors.append({"position": i + 1})
 
-        len_raw = len(raw_text)
-        len_ocr = len(ocr_text)
-        max_len = max(len_raw, len_ocr)
-
-        # --- CHARACTER-LEVEL COMPARISON ---
-        for i in range(max_len):
-            typed_char = raw_text[i] if i < len_raw else None
-            ocr_char = ocr_text[i] if i < len_ocr else None
-
-            if typed_char != ocr_char:
-                if typed_char is None:
-                    errors.append({
-                        "position": i + 1,
-                        "typed_char": None,
-                        "ocr_char": ocr_char,
-                        "error_type": "EXTRA_CHARACTER_IN_IMAGE",
-                        "reason": "OCR detected an extra digit not present in typed input"
-                    })
-                elif ocr_char is None:
-                    errors.append({
-                        "position": i + 1,
-                        "typed_char": typed_char,
-                        "ocr_char": None,
-                        "error_type": "MISSING_CHARACTER_IN_IMAGE",
-                        "reason": "Typed digit has no corresponding OCR character"
-                    })
-                else:
-                    errors.append({
-                        "position": i + 1,
-                        "typed_char": typed_char,
-                        "ocr_char": ocr_char,
-                        "error_type": "CHARACTER_MISMATCH",
-                        "reason": "Ambiguous or misrecognized handwritten digit"
-                    })
-
-        # --- FINAL VERDICT ---
         if errors:
             return {
                 "verdict": "INVALID_OR_AMBIGUOUS",
-                "method": "OCR_ERROR_DETECTION",
                 "final_output": ocr_text,
                 "errors": errors,
-                "why": "Multiple discrepancies detected between typed input and handwritten image."
             }
 
         return {
             "verdict": "VALID_TYPED_TEXT",
-            "method": "OCR",
             "final_output": ocr_text,
             "errors": [],
-            "why": "Typed numeric input validated successfully."
         }
 
-    except Exception as e:
-        print("❌ /verify failed:", str(e))
-        return {
-            "verdict": "ERROR",
-            "method": "OCR",
-            "final_output": None,
-            "errors": [],
-            "why": "OCR service failed on server."
-        }
+    except Exception:
+        return {"verdict": "ERROR", "final_output": None, "errors": []}
