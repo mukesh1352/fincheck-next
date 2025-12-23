@@ -176,6 +176,20 @@ def run_noisy_multi_eval(build_fn, models, runs=5):
             "stability_std": round(np.std([x["stability"] for x in runs]), 4),
         }
     return final
+# ==================================================
+# SINGLE IMAGE INFERENCE
+# ==================================================
+@app.post("/run")
+async def run(image: UploadFile = File(...)):
+    models = load_mnist_models()
+
+    img = Image.open(image.file).convert("L")
+    tensor = CLEAN_TRANSFORM(img)
+
+    # Reuse existing batch inference
+    results = run_batch_chunked([tensor], models)
+
+    return results
 
 # ==================================================
 # DATASET ENDPOINT
